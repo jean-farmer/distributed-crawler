@@ -1,3 +1,4 @@
+// Package testutil provides shared test helpers for the crawler.
 package testutil
 
 import (
@@ -12,6 +13,7 @@ import (
 	"github.com/jnfarmer/distributed-crawl/fetcher"
 )
 
+// FakeSite starts an httptest server that serves canned HTML pages from a path-to-body map.
 func FakeSite(t testing.TB, pages map[string]string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -29,12 +31,14 @@ func FakeSite(t testing.TB, pages map[string]string) *httptest.Server {
 	return srv
 }
 
+// FakeFetcher implements fetcher.Fetcher with canned responses for testing.
 type FakeFetcher struct {
 	mu    sync.Mutex
 	Pages map[string]FakePage
 	Calls []string
 }
 
+// FakePage defines the canned response for a single URL.
 type FakePage struct {
 	Body        string
 	StatusCode  int
@@ -44,7 +48,8 @@ type FakePage struct {
 
 var _ fetcher.Fetcher = (*FakeFetcher)(nil)
 
-func (f *FakeFetcher) Fetch(ctx context.Context, u *url.URL) ([]byte, int, string, error) {
+// Fetch returns the canned response for the given URL.
+func (f *FakeFetcher) Fetch(_ context.Context, u *url.URL) ([]byte, int, string, error) {
 	f.mu.Lock()
 	f.Calls = append(f.Calls, u.String())
 	f.mu.Unlock()
@@ -68,6 +73,7 @@ func (f *FakeFetcher) Fetch(ctx context.Context, u *url.URL) ([]byte, int, strin
 	return []byte(page.Body), statusCode, contentType, nil
 }
 
+// GetCalls returns a snapshot of all URLs fetched so far, safe for concurrent use.
 func (f *FakeFetcher) GetCalls() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -76,6 +82,7 @@ func (f *FakeFetcher) GetCalls() []string {
 	return calls
 }
 
+// IsAllowed always returns true for the fake fetcher.
 func (f *FakeFetcher) IsAllowed(_ context.Context, _ *url.URL) bool {
 	return true
 }

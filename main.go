@@ -1,3 +1,4 @@
+// Package main is the CLI entry point for the sitemap crawler.
 package main
 
 import (
