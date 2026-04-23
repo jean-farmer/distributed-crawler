@@ -1,6 +1,7 @@
 package sitemap
 
 import (
+	"encoding/json"
 	"net/url"
 	"time"
 )
@@ -32,7 +33,18 @@ type Stats struct {
 	PagesFound   int           `json:"pages_found"`
 	PagesCrawled int           `json:"pages_crawled"`
 	BrokenCount  int           `json:"broken_count"`
-	Duration     time.Duration `json:"duration"`
+	Duration     time.Duration `json:"-"`
+}
+
+func (s Stats) MarshalJSON() ([]byte, error) {
+	type Alias Stats
+	return json.Marshal(struct {
+		Alias
+		Duration string `json:"duration"`
+	}{
+		Alias:    Alias(s),
+		Duration: s.Duration.String(),
+	})
 }
 
 type CrawlResult struct {

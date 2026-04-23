@@ -7,20 +7,26 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"sync"
+	"testing"
 
 	"github.com/jnfarmer/distributed-crawl/fetcher"
 )
 
-func FakeSite(pages map[string]string) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func FakeSite(t testing.TB, pages map[string]string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, ok := pages[r.URL.Path]
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(body))
+		if _, err := w.Write([]byte(body)); err != nil {
+			panic(fmt.Sprintf("FakeSite: write failed: %v", err))
+		}
 	}))
+	t.Cleanup(srv.Close)
+	return srv
 }
 
 type FakeFetcher struct {
@@ -60,6 +66,14 @@ func (f *FakeFetcher) Fetch(ctx context.Context, u *url.URL) ([]byte, int, strin
 		contentType = "text/html"
 	}
 	return []byte(page.Body), statusCode, contentType, nil
+}
+
+func (f *FakeFetcher) GetCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	calls := make([]string, len(f.Calls))
+	copy(calls, f.Calls)
+	return calls
 }
 
 func (f *FakeFetcher) IsAllowed(_ context.Context, _ *url.URL) bool {
