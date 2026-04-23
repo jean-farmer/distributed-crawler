@@ -14,14 +14,24 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const defaultMaxBodySize = 10 * 1024 * 1024 // 10 MB
+
+var _ Fetcher = (*HTTPFetcher)(nil)
+
 // HTTPFetcher implements Fetcher using a real HTTP client with rate limiting and robots.txt.
 type HTTPFetcher struct {
-	client    *http.Client
-	limiter   *rate.Limiter
-	userAgent string
+	client      *http.Client
+	limiter     *rate.Limiter
+	userAgent   string
+	maxBodySize int64
 
 	mu     sync.Mutex
-	robots map[string]*robotsData
+	robots map[string]*robotsEntry
+}
+
+type robotsEntry struct {
+	once sync.Once
+	data *robotsData
 }
 
 type robotsData struct {
@@ -34,9 +44,10 @@ func NewHTTPFetcher(reqPerSec float64, timeout time.Duration, userAgent string) 
 		client: &http.Client{
 			Timeout: timeout,
 		},
-		limiter:   rate.NewLimiter(rate.Limit(reqPerSec), 1),
-		userAgent: userAgent,
-		robots:    make(map[string]*robotsData),
+		limiter:     rate.NewLimiter(rate.Limit(reqPerSec), 1),
+		userAgent:   userAgent,
+		maxBodySize: defaultMaxBodySize,
+		robots:      make(map[string]*robotsEntry),
 	}
 }
 
@@ -62,7 +73,7 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, u *url.URL) (body []byte, statu
 		}
 	}()
 
-	body, err = io.ReadAll(resp.Body)
+	body, err = io.ReadAll(io.LimitReader(resp.Body, f.maxBodySize))
 	if err != nil {
 		return nil, 0, "", fmt.Errorf("reading body: %w", err)
 	}
@@ -88,12 +99,21 @@ func (f *HTTPFetcher) getRobots(ctx context.Context, u *url.URL) *robotsData {
 	host := u.Host
 
 	f.mu.Lock()
-	rd, ok := f.robots[host]
-	f.mu.Unlock()
-	if ok {
-		return rd
+	entry, ok := f.robots[host]
+	if !ok {
+		entry = &robotsEntry{}
+		f.robots[host] = entry
 	}
+	f.mu.Unlock()
 
+	entry.once.Do(func() {
+		entry.data = f.fetchRobots(ctx, u)
+	})
+
+	return entry.data
+}
+
+func (f *HTTPFetcher) fetchRobots(ctx context.Context, u *url.URL) *robotsData {
 	robotsURL := &url.URL{
 		Scheme: u.Scheme,
 		Host:   u.Host,
@@ -102,7 +122,6 @@ func (f *HTTPFetcher) getRobots(ctx context.Context, u *url.URL) *robotsData {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, robotsURL.String(), nil)
 	if err != nil {
-		f.cacheRobots(host, nil)
 		return nil
 	}
 	req.Header.Set("User-Agent", f.userAgent)
@@ -111,28 +130,18 @@ func (f *HTTPFetcher) getRobots(ctx context.Context, u *url.URL) *robotsData {
 	if err != nil || resp.StatusCode != http.StatusOK {
 		if resp != nil {
 			if cerr := resp.Body.Close(); cerr != nil {
-				f.cacheRobots(host, nil)
 				return nil
 			}
 		}
-		f.cacheRobots(host, nil)
 		return nil
 	}
 
-	rd = parseRobots(resp.Body)
+	rd := parseRobots(resp.Body)
 	if err := resp.Body.Close(); err != nil {
-		f.cacheRobots(host, nil)
-		return nil
+		return rd
 	}
 
-	f.cacheRobots(host, rd)
 	return rd
-}
-
-func (f *HTTPFetcher) cacheRobots(host string, rd *robotsData) {
-	f.mu.Lock()
-	f.robots[host] = rd
-	f.mu.Unlock()
 }
 
 func parseRobots(r io.Reader) *robotsData {

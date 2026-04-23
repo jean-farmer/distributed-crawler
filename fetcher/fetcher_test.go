@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -61,9 +63,8 @@ func TestHTTPFetcher_NotFound(t *testing.T) {
 }
 
 func TestHTTPFetcher_Timeout(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		time.Sleep(2 * time.Second)
-		_, _ = fmt.Fprint(w, "too slow")
 	}))
 	defer srv.Close()
 
@@ -76,9 +77,8 @@ func TestHTTPFetcher_Timeout(t *testing.T) {
 }
 
 func TestHTTPFetcher_ContextCancelled(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		time.Sleep(5 * time.Second)
-		_, _ = fmt.Fprint(w, "should not reach")
 	}))
 	defer srv.Close()
 
@@ -167,10 +167,39 @@ func TestHTTPFetcher_RobotsMissing(t *testing.T) {
 	}
 }
 
+func TestHTTPFetcher_RobotsOncePerHost(t *testing.T) {
+	var robotsRequests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/robots.txt" {
+			robotsRequests.Add(1)
+			_, _ = fmt.Fprint(w, "User-agent: *\nDisallow: /secret/\n")
+			return
+		}
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+
+	f := NewHTTPFetcher(1000, 5*time.Second, "test-bot/1.0")
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f.IsAllowed(context.Background(), mustParse(srv.URL+"/page"))
+		}()
+	}
+	wg.Wait()
+
+	got := robotsRequests.Load()
+	if got != 1 {
+		t.Errorf("expected exactly 1 robots.txt request, got %d", got)
+	}
+}
+
 func TestHTTPFetcher_RateLimiting(t *testing.T) {
-	requestCount := 0
+	var requestCount atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		requestCount++
+		requestCount.Add(1)
 		_, _ = fmt.Fprint(w, "ok")
 	}))
 	defer srv.Close()
@@ -188,13 +217,36 @@ func TestHTTPFetcher_RateLimiting(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	if requestCount != n {
-		t.Errorf("expected %d requests, got %d", n, requestCount)
+	got := int(requestCount.Load())
+	if got != n {
+		t.Errorf("expected %d requests, got %d", n, got)
 	}
 	// With rate limiting at 10 rps, 5 requests should take at least ~400ms
 	// (first request is immediate, then 4 waits of ~100ms each).
 	minExpected := time.Duration(float64(n-1)/rps*1000) * time.Millisecond * 8 / 10
 	if elapsed < minExpected {
 		t.Errorf("rate limiting too fast: %d requests in %v (expected at least %v)", n, elapsed, minExpected)
+	}
+}
+
+func TestHTTPFetcher_LargeBodyTruncated(t *testing.T) {
+	largeBody := strings.Repeat("x", 20*1024*1024) // 20 MB
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, largeBody)
+	}))
+	defer srv.Close()
+
+	f := NewHTTPFetcher(100, 30*time.Second, "test-bot/1.0")
+	body, status, _, err := f.Fetch(context.Background(), mustParse(srv.URL))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != 200 {
+		t.Errorf("expected status 200, got %d", status)
+	}
+	if int64(len(body)) > defaultMaxBodySize {
+		t.Errorf("body should be capped at %d bytes, got %d", defaultMaxBodySize, len(body))
 	}
 }
