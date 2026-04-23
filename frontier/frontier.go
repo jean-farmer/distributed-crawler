@@ -2,11 +2,15 @@
 package frontier
 
 import (
+	"errors"
 	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/jnfarmer/distributed-crawl/parser"
 )
+
+const compactThreshold = 1024
 
 type entry struct {
 	url   *url.URL
@@ -25,17 +29,20 @@ type Frontier struct {
 }
 
 // New creates a Frontier seeded with the given URL.
-func New(seed *url.URL, maxDepth, maxPages int) *Frontier {
+func New(seed *url.URL, maxDepth, maxPages int) (*Frontier, error) {
+	if seed == nil {
+		return nil, errors.New("seed URL must not be nil")
+	}
 	normalized := parser.Normalize(seed)
 	f := &Frontier{
 		seen:     map[string]bool{normalized: true},
-		domain:   seed.Host,
+		domain:   strings.ToLower(seed.Host),
 		maxDepth: maxDepth,
 		maxPages: maxPages,
 		enqueued: 1,
 	}
 	f.queue = append(f.queue, entry{url: seed, depth: 0})
-	return f
+	return f, nil
 }
 
 // Add enqueues URLs that pass domain, depth, dedup, and maxPages checks.
@@ -48,7 +55,7 @@ func (f *Frontier) Add(urls []*url.URL, depth int) int {
 		if depth > f.maxDepth {
 			continue
 		}
-		if u.Host != f.domain {
+		if strings.ToLower(u.Host) != f.domain {
 			continue
 		}
 		if f.enqueued >= f.maxPages {
@@ -76,6 +83,13 @@ func (f *Frontier) Next() (*url.URL, int, bool) {
 	}
 	e := f.queue[0]
 	f.queue = f.queue[1:]
+
+	if cap(f.queue) > compactThreshold && cap(f.queue) > 4*len(f.queue) {
+		compacted := make([]entry, len(f.queue))
+		copy(compacted, f.queue)
+		f.queue = compacted
+	}
+
 	return e.url, e.depth, true
 }
 

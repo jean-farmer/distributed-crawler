@@ -15,6 +15,15 @@ func mustParse(raw string) *url.URL {
 	return u
 }
 
+func mustNew(t *testing.T, seed *url.URL, maxDepth, maxPages int) *Frontier {
+	t.Helper()
+	f, err := New(seed, maxDepth, maxPages)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	return f
+}
+
 func drainSeed(t *testing.T, f *Frontier) {
 	t.Helper()
 	u, depth, ok := f.Next()
@@ -27,9 +36,15 @@ func drainSeed(t *testing.T, f *Frontier) {
 	_ = u
 }
 
+func TestNew_NilSeed(t *testing.T) {
+	_, err := New(nil, 10, 100)
+	if err == nil {
+		t.Fatal("expected error for nil seed, got nil")
+	}
+}
+
 func TestFrontier_BasicEnqueueDequeue(t *testing.T) {
-	seed := mustParse("https://example.com/")
-	f := New(seed, 10, 100)
+	f := mustNew(t, mustParse("https://example.com/"), 10, 100)
 	drainSeed(t, f)
 
 	urls := []*url.URL{
@@ -59,8 +74,7 @@ func TestFrontier_BasicEnqueueDequeue(t *testing.T) {
 }
 
 func TestFrontier_Deduplication(t *testing.T) {
-	seed := mustParse("https://example.com/")
-	f := New(seed, 10, 100)
+	f := mustNew(t, mustParse("https://example.com/"), 10, 100)
 	drainSeed(t, f)
 
 	same := mustParse("https://example.com/page")
@@ -82,8 +96,7 @@ func TestFrontier_Deduplication(t *testing.T) {
 }
 
 func TestFrontier_DomainFiltering(t *testing.T) {
-	seed := mustParse("https://example.com/")
-	f := New(seed, 10, 100)
+	f := mustNew(t, mustParse("https://example.com/"), 10, 100)
 	drainSeed(t, f)
 
 	urls := []*url.URL{
@@ -111,9 +124,18 @@ func TestFrontier_DomainFiltering(t *testing.T) {
 	}
 }
 
+func TestFrontier_DomainFiltering_CaseInsensitive(t *testing.T) {
+	f := mustNew(t, mustParse("https://Example.COM/"), 10, 100)
+	drainSeed(t, f)
+
+	added := f.Add([]*url.URL{mustParse("https://example.com/page")}, 1)
+	if added != 1 {
+		t.Errorf("expected case-insensitive domain match to accept URL, got added=%d", added)
+	}
+}
+
 func TestFrontier_DepthLimit(t *testing.T) {
-	seed := mustParse("https://example.com/")
-	f := New(seed, 2, 100)
+	f := mustNew(t, mustParse("https://example.com/"), 2, 100)
 	drainSeed(t, f)
 
 	f.Add([]*url.URL{mustParse("https://example.com/depth1")}, 1)
@@ -135,8 +157,7 @@ func TestFrontier_DepthLimit(t *testing.T) {
 }
 
 func TestFrontier_MaxPages(t *testing.T) {
-	seed := mustParse("https://example.com/")
-	f := New(seed, 10, 3)
+	f := mustNew(t, mustParse("https://example.com/"), 10, 3)
 
 	urls := []*url.URL{
 		mustParse("https://example.com/a"),
@@ -152,9 +173,18 @@ func TestFrontier_MaxPages(t *testing.T) {
 	}
 }
 
+func TestFrontier_MaxPages_SubsequentAddReturnsZero(t *testing.T) {
+	f := mustNew(t, mustParse("https://example.com/"), 10, 2)
+	f.Add([]*url.URL{mustParse("https://example.com/a")}, 1)
+
+	added := f.Add([]*url.URL{mustParse("https://example.com/b")}, 1)
+	if added != 0 {
+		t.Errorf("expected 0 URLs added after maxPages hit, got %d", added)
+	}
+}
+
 func TestFrontier_EmptyReturnsNotOk(t *testing.T) {
-	seed := mustParse("https://example.com/")
-	f := New(seed, 10, 100)
+	f := mustNew(t, mustParse("https://example.com/"), 10, 100)
 	drainSeed(t, f)
 
 	_, _, ok := f.Next()
@@ -164,8 +194,7 @@ func TestFrontier_EmptyReturnsNotOk(t *testing.T) {
 }
 
 func TestFrontier_NormalizesBeforeDedup(t *testing.T) {
-	seed := mustParse("https://example.com/")
-	f := New(seed, 10, 100)
+	f := mustNew(t, mustParse("https://example.com/"), 10, 100)
 	drainSeed(t, f)
 
 	f.Add([]*url.URL{mustParse("https://example.com/page")}, 1)
@@ -186,9 +215,8 @@ func TestFrontier_NormalizesBeforeDedup(t *testing.T) {
 	}
 }
 
-func TestFrontier_ConcurrentAccess(t *testing.T) {
-	seed := mustParse("https://example.com/")
-	f := New(seed, 10, 1000)
+func TestFrontier_ConcurrentAdd(t *testing.T) {
+	f := mustNew(t, mustParse("https://example.com/"), 10, 1000)
 
 	var wg sync.WaitGroup
 
@@ -223,9 +251,59 @@ func TestFrontier_ConcurrentAccess(t *testing.T) {
 	}
 }
 
+func TestFrontier_ConcurrentAddAndNext(t *testing.T) {
+	f := mustNew(t, mustParse("https://example.com/"), 10, 10000)
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(batch int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				u := mustParse(fmt.Sprintf("https://example.com/%d/%d", batch, j))
+				f.Add([]*url.URL{u}, 1)
+			}
+		}(i)
+	}
+
+	var dequeued int
+	var dequeueMu sync.Mutex
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_, _, ok := f.Next()
+				if ok {
+					dequeueMu.Lock()
+					dequeued++
+					dequeueMu.Unlock()
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	remaining := 0
+	for {
+		_, _, ok := f.Next()
+		if !ok {
+			break
+		}
+		remaining++
+	}
+
+	total := dequeued + remaining
+	// 1 seed + 500 unique URLs = 501 total enqueued.
+	if total != 501 {
+		t.Errorf("expected 501 total dequeued (seed + 500), got %d (concurrent=%d, remaining=%d)", total, dequeued, remaining)
+	}
+}
+
 func TestFrontier_Len(t *testing.T) {
-	seed := mustParse("https://example.com/")
-	f := New(seed, 10, 100)
+	f := mustNew(t, mustParse("https://example.com/"), 10, 100)
 
 	if f.Len() != 1 {
 		t.Errorf("expected len 1 (seed), got %d", f.Len())
@@ -247,8 +325,7 @@ func TestFrontier_Len(t *testing.T) {
 }
 
 func TestFrontier_SeedIsDeduped(t *testing.T) {
-	seed := mustParse("https://example.com/")
-	f := New(seed, 10, 100)
+	f := mustNew(t, mustParse("https://example.com/"), 10, 100)
 
 	added := f.Add([]*url.URL{mustParse("https://example.com/")}, 1)
 	if added != 0 {
