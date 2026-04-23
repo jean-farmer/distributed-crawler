@@ -70,13 +70,25 @@ func ExtractLinks(body []byte, base *url.URL) ([]*url.URL, error) {
 
 // Normalize canonicalizes a URL for deduplication.
 func Normalize(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
 	normalized := *u
 	normalized.Scheme = strings.ToLower(normalized.Scheme)
 	normalized.Host = strings.ToLower(normalized.Host)
 	normalized.Fragment = ""
 	normalized.RawFragment = ""
+	normalized.ForceQuery = false
 
-	if normalized.Path != "/" {
+	if normalized.Scheme == "https" && strings.HasSuffix(normalized.Host, ":443") {
+		normalized.Host = strings.TrimSuffix(normalized.Host, ":443")
+	} else if normalized.Scheme == "http" && strings.HasSuffix(normalized.Host, ":80") {
+		normalized.Host = strings.TrimSuffix(normalized.Host, ":80")
+	}
+
+	if normalized.Path == "" {
+		normalized.Path = "/"
+	} else if normalized.Path != "/" {
 		normalized.Path = strings.TrimRight(normalized.Path, "/")
 	}
 

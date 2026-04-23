@@ -193,3 +193,74 @@ func TestNormalize_Idempotent(t *testing.T) {
 		t.Errorf("not idempotent: first=%q, second=%q", first, second)
 	}
 }
+
+func TestNormalize_EmptyPathEqualsRoot(t *testing.T) {
+	a := Normalize(mustParse("https://example.com"))
+	b := Normalize(mustParse("https://example.com/"))
+	if a != b {
+		t.Errorf("empty path and root slash should be equal: %q != %q", a, b)
+	}
+}
+
+func TestNormalize_DefaultPort(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      string
+		wantSame string
+	}{
+		{"https 443", "https://example.com:443/path", "https://example.com/path"},
+		{"http 80", "http://example.com:80/path", "http://example.com/path"},
+		{"non-default port preserved", "https://example.com:8080/path", "https://example.com:8080/path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Normalize(mustParse(tt.raw))
+			want := Normalize(mustParse(tt.wantSame))
+			if got != want {
+				t.Errorf("Normalize(%q) = %q, want %q", tt.raw, got, want)
+			}
+		})
+	}
+}
+
+func TestNormalize_NilURL(t *testing.T) {
+	got := Normalize(nil)
+	if got != "" {
+		t.Errorf("expected empty string for nil URL, got %q", got)
+	}
+}
+
+func TestNormalize_TrailingQuestionMark(t *testing.T) {
+	a := Normalize(mustParse("https://example.com/path?"))
+	b := Normalize(mustParse("https://example.com/path"))
+	if a != b {
+		t.Errorf("trailing ? should normalize away: %q != %q", a, b)
+	}
+}
+
+func TestExtractLinks_EmptyBody(t *testing.T) {
+	base := mustParse("https://example.com/")
+	links, err := ExtractLinks(nil, base)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(links) != 0 {
+		t.Errorf("expected no links from empty body, got %d", len(links))
+	}
+}
+
+func TestExtractLinks_DuplicateLinks(t *testing.T) {
+	base := mustParse("https://example.com/")
+	body := []byte(`<html><body>
+		<a href="/page">First</a>
+		<a href="/page">Second</a>
+	</body></html>`)
+
+	links, err := ExtractLinks(body, base)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(links) != 2 {
+		t.Fatalf("expected 2 links (dedup is caller's job), got %d", len(links))
+	}
+}
