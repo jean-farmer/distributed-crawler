@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jnfarmer/distributed-crawl/fetcher"
 )
@@ -36,6 +37,7 @@ type FakeFetcher struct {
 	mu    sync.Mutex
 	Pages map[string]FakePage
 	Calls []string
+	Delay time.Duration
 }
 
 // FakePage defines the canned response for a single URL.
@@ -49,10 +51,19 @@ type FakePage struct {
 var _ fetcher.Fetcher = (*FakeFetcher)(nil)
 
 // Fetch returns the canned response for the given URL.
-func (f *FakeFetcher) Fetch(_ context.Context, u *url.URL) ([]byte, int, string, error) {
+func (f *FakeFetcher) Fetch(ctx context.Context, u *url.URL) ([]byte, int, string, error) {
 	f.mu.Lock()
 	f.Calls = append(f.Calls, u.String())
+	delay := f.Delay
 	f.mu.Unlock()
+
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, 0, "", ctx.Err()
+		}
+	}
 
 	key := u.String()
 	page, ok := f.Pages[key]
