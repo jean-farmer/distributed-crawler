@@ -204,3 +204,76 @@ func TestCrawl_ContextCancellation(t *testing.T) {
 		t.Errorf("expected cancellation to stop crawl early, got %d pages", len(sm.Pages))
 	}
 }
+
+func TestCrawl_ConcurrentFaster(t *testing.T) {
+	pages := make(map[string]testutil.FakePage)
+	seedBody := `<html><body>`
+	for i := 0; i < 10; i++ {
+		u := fmt.Sprintf("https://example.com/p%d", i)
+		seedBody += fmt.Sprintf(`<a href="%s">link</a>`, u)
+		pages[u] = testutil.FakePage{Body: `<html><body>page</body></html>`}
+	}
+	seedBody += `</body></html>`
+	pages["https://example.com/"] = testutil.FakePage{Body: seedBody}
+
+	run := func(workers int) time.Duration {
+		f := &testutil.FakeFetcher{Pages: pages, Delay: 50 * time.Millisecond}
+		cfg := Config{Workers: workers, MaxDepth: 10, MaxPages: 100, Seed: "https://example.com/"}
+		start := time.Now()
+		sm, err := New(cfg, f).Run(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sm.Pages) != 11 {
+			t.Errorf("workers=%d: expected 11 pages, got %d", workers, len(sm.Pages))
+		}
+		return time.Since(start)
+	}
+
+	serial := run(1)
+	parallel := run(5)
+
+	if parallel >= serial {
+		t.Errorf("concurrent (workers=5) should be faster than serial: serial=%v, parallel=%v", serial, parallel)
+	}
+	if float64(parallel) > float64(serial)*0.6 {
+		t.Errorf("concurrent should be significantly faster: serial=%v, parallel=%v (ratio=%.2f)", serial, parallel, float64(parallel)/float64(serial))
+	}
+}
+
+func TestCrawl_NoDuplicateFetches(t *testing.T) {
+	pages := make(map[string]testutil.FakePage)
+	seedBody := `<html><body>`
+	for i := 0; i < 10; i++ {
+		u := fmt.Sprintf("https://example.com/p%d", i)
+		body := `<html><body>`
+		for j := 0; j < 10; j++ {
+			body += fmt.Sprintf(`<a href="https://example.com/p%d">link</a>`, j)
+		}
+		body += `</body></html>`
+		pages[u] = testutil.FakePage{Body: body}
+		seedBody += fmt.Sprintf(`<a href="%s">link</a>`, u)
+	}
+	seedBody += `</body></html>`
+	pages["https://example.com/"] = testutil.FakePage{Body: seedBody}
+
+	f := &testutil.FakeFetcher{Pages: pages}
+	cfg := Config{Workers: 5, MaxDepth: 10, MaxPages: 100, Seed: "https://example.com/"}
+	sm, err := New(cfg, f).Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	calls := f.GetCalls()
+	seen := make(map[string]bool)
+	for _, c := range calls {
+		if seen[c] {
+			t.Errorf("URL fetched more than once: %s", c)
+		}
+		seen[c] = true
+	}
+
+	if len(sm.Pages) != 11 {
+		t.Errorf("expected 11 pages, got %d", len(sm.Pages))
+	}
+}

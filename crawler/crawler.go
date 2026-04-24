@@ -4,6 +4,7 @@ package crawler
 import (
 	"context"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/jnfarmer/distributed-crawl/fetcher"
@@ -18,6 +19,11 @@ type Config struct {
 	MaxDepth int
 	MaxPages int
 	Seed     string
+}
+
+type crawlJob struct {
+	url   *url.URL
+	depth int
 }
 
 // Crawler coordinates the BFS crawl.
@@ -44,52 +50,104 @@ func (c *Crawler) Run(ctx context.Context) (*sitemap.SiteMap, error) {
 	}
 
 	start := time.Now()
-	var pages []sitemap.Page
 
-	for {
-		select {
-		case <-ctx.Done():
-			return c.buildSiteMap(seedURL, pages, start), nil
-		default:
-		}
+	jobs := make(chan crawlJob, c.cfg.Workers)
+	results := make(chan sitemap.CrawlResult, c.cfg.Workers)
 
-		u, depth, ok := fr.Next()
-		if !ok {
-			break
-		}
-
-		if !c.fetcher.IsAllowed(ctx, u) {
-			continue
-		}
-
-		body, statusCode, contentType, fetchErr := c.fetcher.Fetch(ctx, u)
-
-		page := sitemap.Page{
-			URL:         u.String(),
-			Depth:       depth,
-			StatusCode:  statusCode,
-			ContentType: contentType,
-		}
-
-		if fetchErr != nil {
-			page.Error = fetchErr.Error()
-			pages = append(pages, page)
-			continue
-		}
-
-		links, _ := parser.ExtractLinks(body, u)
-		for _, link := range links {
-			page.Links = append(page.Links, sitemap.Link{
-				URL:  link.String(),
-				Text: "",
-			})
-		}
-
-		fr.Add(links, depth+1)
-		pages = append(pages, page)
+	var wg sync.WaitGroup
+	for range c.cfg.Workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				result := c.processURL(ctx, job)
+				results <- result
+			}
+		}()
 	}
 
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var pages []sitemap.Page
+	inFlight := 0
+
+	pending, hasPending := dequeueJob(fr)
+
+	for hasPending || inFlight > 0 {
+		var jobsCh chan crawlJob
+		if hasPending {
+			jobsCh = jobs
+		}
+
+		select {
+		case jobsCh <- pending:
+			inFlight++
+			pending, hasPending = dequeueJob(fr)
+		case res := <-results:
+			inFlight--
+			pages = append(pages, res.Page)
+			fr.Add(res.DiscoveredURLs, res.Page.Depth+1)
+			if !hasPending {
+				pending, hasPending = dequeueJob(fr)
+			}
+		case <-ctx.Done():
+			goto drain
+		}
+	}
+
+	close(jobs)
+	for res := range results {
+		pages = append(pages, res.Page)
+	}
 	return c.buildSiteMap(seedURL, pages, start), nil
+
+drain:
+	close(jobs)
+	for res := range results {
+		pages = append(pages, res.Page)
+	}
+	return c.buildSiteMap(seedURL, pages, start), nil
+}
+
+func dequeueJob(fr *frontier.Frontier) (crawlJob, bool) {
+	u, depth, ok := fr.Next()
+	if !ok {
+		return crawlJob{}, false
+	}
+	return crawlJob{url: u, depth: depth}, true
+}
+
+func (c *Crawler) processURL(ctx context.Context, job crawlJob) sitemap.CrawlResult {
+	page := sitemap.Page{
+		URL:   job.url.String(),
+		Depth: job.depth,
+	}
+
+	if !c.fetcher.IsAllowed(ctx, job.url) {
+		return sitemap.CrawlResult{Page: page}
+	}
+
+	body, statusCode, contentType, fetchErr := c.fetcher.Fetch(ctx, job.url)
+	page.StatusCode = statusCode
+	page.ContentType = contentType
+
+	if fetchErr != nil {
+		page.Error = fetchErr.Error()
+		return sitemap.CrawlResult{Page: page}
+	}
+
+	links, _ := parser.ExtractLinks(body, job.url)
+	for _, link := range links {
+		page.Links = append(page.Links, sitemap.Link{
+			URL:  link.String(),
+			Text: "",
+		})
+	}
+
+	return sitemap.CrawlResult{Page: page, DiscoveredURLs: links}
 }
 
 func (c *Crawler) buildSiteMap(seed *url.URL, pages []sitemap.Page, start time.Time) *sitemap.SiteMap {
