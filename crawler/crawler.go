@@ -3,6 +3,7 @@ package crawler
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"sync"
 	"time"
@@ -39,6 +40,10 @@ func New(cfg Config, f fetcher.Fetcher) *Crawler {
 
 // Run executes the crawl and returns the completed SiteMap.
 func (c *Crawler) Run(ctx context.Context) (*sitemap.SiteMap, error) {
+	if c.cfg.Workers < 1 {
+		return nil, errors.New("workers must be at least 1")
+	}
+
 	seedURL, err := url.Parse(c.cfg.Seed)
 	if err != nil {
 		return nil, err
@@ -76,6 +81,7 @@ func (c *Crawler) Run(ctx context.Context) (*sitemap.SiteMap, error) {
 
 	pending, hasPending := dequeueJob(fr)
 
+dispatch:
 	for hasPending || inFlight > 0 {
 		var jobsCh chan crawlJob
 		if hasPending {
@@ -94,17 +100,10 @@ func (c *Crawler) Run(ctx context.Context) (*sitemap.SiteMap, error) {
 				pending, hasPending = dequeueJob(fr)
 			}
 		case <-ctx.Done():
-			goto drain
+			break dispatch
 		}
 	}
 
-	close(jobs)
-	for res := range results {
-		pages = append(pages, res.Page)
-	}
-	return c.buildSiteMap(seedURL, pages, start), nil
-
-drain:
 	close(jobs)
 	for res := range results {
 		pages = append(pages, res.Page)

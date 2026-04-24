@@ -277,3 +277,31 @@ func TestCrawl_NoDuplicateFetches(t *testing.T) {
 		t.Errorf("expected 11 pages, got %d", len(sm.Pages))
 	}
 }
+
+func TestCrawl_ZeroWorkers(t *testing.T) {
+	f := &testutil.FakeFetcher{
+		Pages: map[string]testutil.FakePage{
+			"https://example.com/": {Body: `<html><body>Hello</body></html>`},
+		},
+	}
+
+	cfg := Config{Workers: 0, MaxDepth: 10, MaxPages: 100, Seed: "https://example.com/"}
+	_, err := New(cfg, f).Run(context.Background())
+	if err == nil {
+		t.Fatal("expected error for Workers=0, got nil")
+	}
+}
+
+func TestCrawl_NegativeWorkers(t *testing.T) {
+	f := &testutil.FakeFetcher{
+		Pages: map[string]testutil.FakePage{
+			"https://example.com/": {Body: `<html><body>Hello</body></html>`},
+		},
+	}
+
+	cfg := Config{Workers: -1, MaxDepth: 10, MaxPages: 100, Seed: "https://example.com/"}
+	_, err := New(cfg, f).Run(context.Background())
+	if err == nil {
+		t.Fatal("expected error for Workers=-1, got nil")
+	}
+}
