@@ -163,5 +163,8 @@ func (c *Crawler) buildSiteMap(seed *url.URL, pages []sitemap.Page, start time.T
 	if sm.Pages == nil {
 		sm.Pages = []sitemap.Page{}
 	}
+	if sm.BrokenLinks == nil {
+		sm.BrokenLinks = []sitemap.Link{}
+	}
 	return sm
 }

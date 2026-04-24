@@ -204,3 +204,61 @@ func TestDOT_EmptyGraph(t *testing.T) {
 		t.Error("expected no edges in empty graph")
 	}
 }
+
+func TestJSON_NilSiteMap(t *testing.T) {
+	_, err := JSON(nil)
+	if err == nil {
+		t.Fatal("expected error for nil SiteMap, got nil")
+	}
+}
+
+func TestDOT_NilSiteMap(t *testing.T) {
+	_, err := DOT(nil)
+	if err == nil {
+		t.Fatal("expected error for nil SiteMap, got nil")
+	}
+}
+
+func TestJSON_NilSlicesNormalized(t *testing.T) {
+	sm := &sitemap.SiteMap{
+		Seed:   "https://example.com/",
+		Domain: "example.com",
+		Stats: sitemap.Stats{
+			Duration: time.Second,
+		},
+	}
+	data, err := JSON(sm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	raw := string(data)
+	if strings.Contains(raw, `"pages": null`) {
+		t.Error("expected pages to be [] not null when nil input")
+	}
+	if strings.Contains(raw, `"broken_links": null`) {
+		t.Error("expected broken_links to be [] not null when nil input")
+	}
+}
+
+func TestDOT_IsolatedNodeAppears(t *testing.T) {
+	sm := &sitemap.SiteMap{
+		Seed:   "https://example.com/",
+		Domain: "example.com",
+		Pages: []sitemap.Page{
+			{URL: "https://example.com/leaf", Depth: 0, StatusCode: 200},
+		},
+	}
+	data, err := DOT(sm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := string(data)
+	if !strings.Contains(out, `"https://example.com/leaf"`) {
+		t.Error("expected isolated node to appear in DOT output")
+	}
+	if strings.Contains(out, "->") {
+		t.Error("expected no edges for page with no links")
+	}
+}
