@@ -150,21 +150,45 @@ func (c *Crawler) processURL(ctx context.Context, job crawlJob) sitemap.CrawlRes
 }
 
 func (c *Crawler) buildSiteMap(seed *url.URL, pages []sitemap.Page, start time.Time) *sitemap.SiteMap {
-	sm := &sitemap.SiteMap{
-		Seed:   seed.String(),
-		Domain: seed.Host,
-		Pages:  pages,
+	if pages == nil {
+		pages = []sitemap.Page{}
+	}
+
+	statusByURL := make(map[string]int, len(pages))
+	for _, p := range pages {
+		statusByURL[p.URL] = p.StatusCode
+	}
+
+	var brokenLinks []sitemap.Link
+	for _, p := range pages {
+		for _, link := range p.Links {
+			if code, ok := statusByURL[link.URL]; ok && (code < 200 || code >= 400) {
+				link.Broken = true
+				brokenLinks = append(brokenLinks, link)
+			}
+		}
+	}
+	if brokenLinks == nil {
+		brokenLinks = []sitemap.Link{}
+	}
+
+	crawled := 0
+	for _, p := range pages {
+		if p.StatusCode > 0 {
+			crawled++
+		}
+	}
+
+	return &sitemap.SiteMap{
+		Seed:        seed.String(),
+		Domain:      seed.Host,
+		Pages:       pages,
+		BrokenLinks: brokenLinks,
 		Stats: sitemap.Stats{
 			PagesFound:   len(pages),
-			PagesCrawled: len(pages),
+			PagesCrawled: crawled,
+			BrokenCount:  len(brokenLinks),
 			Duration:     time.Since(start),
 		},
 	}
-	if sm.Pages == nil {
-		sm.Pages = []sitemap.Page{}
-	}
-	if sm.BrokenLinks == nil {
-		sm.BrokenLinks = []sitemap.Link{}
-	}
-	return sm
 }

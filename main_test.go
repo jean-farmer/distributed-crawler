@@ -92,6 +92,12 @@ func TestIntegration_FullCrawl(t *testing.T) {
 	if sm.Stats.Duration <= 0 {
 		t.Error("expected positive duration")
 	}
+	if sm.Stats.BrokenCount != 1 {
+		t.Errorf("expected stats.broken_count=1, got %d", sm.Stats.BrokenCount)
+	}
+	if len(sm.BrokenLinks) != 1 {
+		t.Errorf("expected 1 broken link, got %d", len(sm.BrokenLinks))
+	}
 }
 
 func TestIntegration_JSONOutput(t *testing.T) {
@@ -127,8 +133,8 @@ func TestIntegration_JSONOutput(t *testing.T) {
 	if decoded.BrokenLinks == nil {
 		t.Error("expected broken_links array, got null")
 	}
-	if len(decoded.BrokenLinks) != 0 {
-		t.Errorf("expected 0 broken links (post-processing not yet implemented), got %d", len(decoded.BrokenLinks))
+	if len(decoded.BrokenLinks) != 1 {
+		t.Errorf("expected 1 broken link, got %d", len(decoded.BrokenLinks))
 	}
 }
 
