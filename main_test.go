@@ -14,7 +14,7 @@ import (
 	"github.com/jnfarmer/distributed-crawl/sitemap"
 )
 
-func fivePagSite() map[string]testutil.FakePage {
+func fivePageSite() map[string]testutil.FakePage {
 	return map[string]testutil.FakePage{
 		"https://example.com/": {Body: `<html><body>
 			<a href="https://example.com/about">About</a>
@@ -36,7 +36,7 @@ func fivePagSite() map[string]testutil.FakePage {
 }
 
 func TestIntegration_FullCrawl(t *testing.T) {
-	f := &testutil.FakeFetcher{Pages: fivePagSite()}
+	f := &testutil.FakeFetcher{Pages: fivePageSite()}
 	cfg := crawler.Config{Workers: 3, MaxDepth: 10, MaxPages: 100, Seed: "https://example.com/"}
 	sm, err := crawler.New(cfg, f).Run(context.Background())
 	if err != nil {
@@ -62,6 +62,19 @@ func TestIntegration_FullCrawl(t *testing.T) {
 		t.Errorf("expected /contact at depth 2, got %d", urls["https://example.com/contact"].Depth)
 	}
 
+	seed := urls["https://example.com/"]
+	if len(seed.Links) != 3 {
+		t.Errorf("expected seed to have 3 links, got %d", len(seed.Links))
+	}
+	if seed.ContentType != "text/html" {
+		t.Errorf("expected seed content type text/html, got %s", seed.ContentType)
+	}
+
+	about := urls["https://example.com/about"]
+	if len(about.Links) != 2 {
+		t.Errorf("expected /about to have 2 links, got %d", len(about.Links))
+	}
+
 	brokenPage, ok := urls["https://example.com/broken"]
 	if !ok {
 		t.Fatal("expected /broken in results")
@@ -82,7 +95,7 @@ func TestIntegration_FullCrawl(t *testing.T) {
 }
 
 func TestIntegration_JSONOutput(t *testing.T) {
-	f := &testutil.FakeFetcher{Pages: fivePagSite()}
+	f := &testutil.FakeFetcher{Pages: fivePageSite()}
 	cfg := crawler.Config{Workers: 3, MaxDepth: 10, MaxPages: 100, Seed: "https://example.com/"}
 	sm, err := crawler.New(cfg, f).Run(context.Background())
 	if err != nil {
@@ -114,10 +127,13 @@ func TestIntegration_JSONOutput(t *testing.T) {
 	if decoded.BrokenLinks == nil {
 		t.Error("expected broken_links array, got null")
 	}
+	if len(decoded.BrokenLinks) != 0 {
+		t.Errorf("expected 0 broken links (post-processing not yet implemented), got %d", len(decoded.BrokenLinks))
+	}
 }
 
 func TestIntegration_DOTOutput(t *testing.T) {
-	f := &testutil.FakeFetcher{Pages: fivePagSite()}
+	f := &testutil.FakeFetcher{Pages: fivePageSite()}
 	cfg := crawler.Config{Workers: 3, MaxDepth: 10, MaxPages: 100, Seed: "https://example.com/"}
 	sm, err := crawler.New(cfg, f).Run(context.Background())
 	if err != nil {
