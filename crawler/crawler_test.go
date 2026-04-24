@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jnfarmer/distributed-crawl/internal/testutil"
+	"github.com/jnfarmer/distributed-crawl/sitemap"
 )
 
 func TestCrawl_SinglePage(t *testing.T) {
@@ -303,5 +304,117 @@ func TestCrawl_NegativeWorkers(t *testing.T) {
 	_, err := New(cfg, f).Run(context.Background())
 	if err == nil {
 		t.Fatal("expected error for Workers=-1, got nil")
+	}
+}
+
+func TestCrawl_BrokenLinkDetected(t *testing.T) {
+	f := &testutil.FakeFetcher{
+		Pages: map[string]testutil.FakePage{
+			"https://example.com/": {Body: `<html><body>
+				<a href="https://example.com/ok">OK</a>
+				<a href="https://example.com/missing">Missing</a>
+			</body></html>`},
+			"https://example.com/ok":      {Body: `<html><body>ok</body></html>`},
+			"https://example.com/missing": {StatusCode: 404, Body: `<html><body>not found</body></html>`},
+		},
+	}
+
+	cfg := Config{Workers: 1, MaxDepth: 10, MaxPages: 100, Seed: "https://example.com/"}
+	sm, err := New(cfg, f).Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(sm.BrokenLinks) != 1 {
+		t.Fatalf("expected 1 broken link, got %d", len(sm.BrokenLinks))
+	}
+	if sm.BrokenLinks[0].URL != "https://example.com/missing" {
+		t.Errorf("expected broken link to /missing, got %s", sm.BrokenLinks[0].URL)
+	}
+	if !sm.BrokenLinks[0].Broken {
+		t.Error("expected BrokenLinks[0].Broken=true")
+	}
+	if sm.Stats.BrokenCount != 1 {
+		t.Errorf("expected BrokenCount=1, got %d", sm.Stats.BrokenCount)
+	}
+}
+
+func TestCrawl_BrokenLinkFlagOnPageLinks(t *testing.T) {
+	f := &testutil.FakeFetcher{
+		Pages: map[string]testutil.FakePage{
+			"https://example.com/":    {Body: `<html><body><a href="https://example.com/bad">Bad</a></body></html>`},
+			"https://example.com/bad": {StatusCode: 500, Body: `<html><body>error</body></html>`},
+		},
+	}
+
+	cfg := Config{Workers: 1, MaxDepth: 10, MaxPages: 100, Seed: "https://example.com/"}
+	sm, err := New(cfg, f).Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var seedPage *sitemap.Page
+	for i := range sm.Pages {
+		if sm.Pages[i].URL == "https://example.com/" {
+			seedPage = &sm.Pages[i]
+			break
+		}
+	}
+	if seedPage == nil {
+		t.Fatal("seed page not found")
+	}
+	if len(seedPage.Links) != 1 {
+		t.Fatalf("expected 1 link on seed, got %d", len(seedPage.Links))
+	}
+	if !seedPage.Links[0].Broken {
+		t.Error("expected Page.Links[0].Broken=true for 500 target")
+	}
+}
+
+func TestCrawl_NoBrokenLinks(t *testing.T) {
+	f := &testutil.FakeFetcher{
+		Pages: map[string]testutil.FakePage{
+			"https://example.com/":  {Body: `<html><body><a href="https://example.com/a">A</a></body></html>`},
+			"https://example.com/a": {Body: `<html><body>ok</body></html>`},
+		},
+	}
+
+	cfg := Config{Workers: 1, MaxDepth: 10, MaxPages: 100, Seed: "https://example.com/"}
+	sm, err := New(cfg, f).Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(sm.BrokenLinks) != 0 {
+		t.Errorf("expected 0 broken links, got %d", len(sm.BrokenLinks))
+	}
+	if sm.Stats.BrokenCount != 0 {
+		t.Errorf("expected BrokenCount=0, got %d", sm.Stats.BrokenCount)
+	}
+}
+
+func TestCrawl_PagesCrawledVsFound(t *testing.T) {
+	f := &testutil.FakeFetcher{
+		Pages: map[string]testutil.FakePage{
+			"https://example.com/": {Body: `<html><body>
+				<a href="https://example.com/ok">OK</a>
+				<a href="https://example.com/err">Err</a>
+			</body></html>`},
+			"https://example.com/ok":  {Body: `<html><body>ok</body></html>`},
+			"https://example.com/err": {Err: errors.New("connection refused")},
+		},
+	}
+
+	cfg := Config{Workers: 1, MaxDepth: 10, MaxPages: 100, Seed: "https://example.com/"}
+	sm, err := New(cfg, f).Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if sm.Stats.PagesFound != 3 {
+		t.Errorf("expected PagesFound=3, got %d", sm.Stats.PagesFound)
+	}
+	if sm.Stats.PagesCrawled != 2 {
+		t.Errorf("expected PagesCrawled=2 (seed + ok), got %d", sm.Stats.PagesCrawled)
 	}
 }

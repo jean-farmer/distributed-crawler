@@ -160,11 +160,12 @@ func (c *Crawler) buildSiteMap(seed *url.URL, pages []sitemap.Page, start time.T
 	}
 
 	var brokenLinks []sitemap.Link
-	for _, p := range pages {
-		for _, link := range p.Links {
-			if code, ok := statusByURL[link.URL]; ok && (code < 200 || code >= 400) {
+	for i := range pages {
+		for j := range pages[i].Links {
+			link := &pages[i].Links[j]
+			if code, ok := statusByURL[link.URL]; ok && code > 0 && (code < 200 || code >= 400) {
 				link.Broken = true
-				brokenLinks = append(brokenLinks, link)
+				brokenLinks = append(brokenLinks, *link)
 			}
 		}
 	}
